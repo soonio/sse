@@ -52,19 +52,19 @@ func sseHandler(w http.ResponseWriter, r *http.Request) {
 }
 
 func main() {
-
-	var n = make(chan struct{})
-
 	go func() {
-		var t = time.NewTicker(10 * time.Second)
+		quit := make(chan os.Signal, 1)
+		signal.Notify(quit, syscall.SIGINT, syscall.SIGTERM)
+
+		var t = time.NewTicker(60 * time.Second)
 
 		for {
 			select {
-			case <-n:
-				fmt.Println("退出")
+			case <-quit:
+				fmt.Println("退出 ping")
 				return
 			case <-t.C:
-				t.Reset(10 * time.Second)
+				t.Reset(60 * time.Second)
 				for s, w := range m {
 					_, _ = w.Write([]byte("data: ping [" + s + "]" + time.Now().Format("2006-01-02 15:04:05") + "\n\n"))
 					w.(http.Flusher).Flush()
@@ -104,6 +104,5 @@ func main() {
 	quit := make(chan os.Signal, 1)
 	signal.Notify(quit, syscall.SIGINT, syscall.SIGTERM)
 	<-quit
-
-	close(n)
+	fmt.Println("关闭主流程")
 }
