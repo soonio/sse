@@ -24,16 +24,12 @@ func sseHandler(w http.ResponseWriter, r *http.Request) {
 
 	uid := r.URL.Query().Get("uid")
 	if uid == "" { // 没有用户ID 直接关闭
-		_, _ = w.Write([]byte("data: 用户认证失败 " + time.Now().Format("2006-01-02 15:04:05") + "\n\n"))
-		w.(http.Flusher).Flush()
+		push(w, "用户认证失败 "+time.Now().Format("2006-01-02 15:04:05"))
+
 		w.Header().Set("Connection", "close")
 
 		fmt.Println("done2")
 	} else {
-
-		_, _ = w.Write([]byte("data: " + time.Now().Format("2006-01-02 15:04:05") + "\n\n"))
-		w.(http.Flusher).Flush()
-
 		locker.Lock()
 		if wo, ok := m[uid]; ok {
 			// 已经登陆一个了，直接关掉
@@ -51,12 +47,41 @@ func sseHandler(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
+//var builderPool = sync.Pool{
+//	New: func() interface{} {
+//		return &strings.Builder{}
+//	},
+//}
+//
+//func GetBuilder() *strings.Builder {
+//	b := builderPool.Get().(*strings.Builder)
+//	b.Reset()
+//	return b
+//}
+//
+//func PutBuilder(b *strings.Builder) {
+//	builderPool.Put(b)
+//}
+
+func push(w http.ResponseWriter, msg string) {
+	defer func() {
+		if err := recover(); err != nil {
+			fmt.Println(err)
+		}
+	}()
+
+	_, _ = w.Write([]byte("data: " + msg + "\n\n"))
+	w.(http.Flusher).Flush()
+}
+
 func main() {
 	go func() {
 		quit := make(chan os.Signal, 1)
 		signal.Notify(quit, syscall.SIGINT, syscall.SIGTERM)
 
-		var t = time.NewTicker(60 * time.Second)
+		var frq time.Duration = 5
+
+		var t = time.NewTicker(frq * time.Second)
 
 		for {
 			select {
@@ -64,10 +89,9 @@ func main() {
 				fmt.Println("退出 ping")
 				return
 			case <-t.C:
-				t.Reset(60 * time.Second)
+				t.Reset(frq * time.Second)
 				for s, w := range m {
-					_, _ = w.Write([]byte("data: ping [" + s + "]" + time.Now().Format("2006-01-02 15:04:05") + "\n\n"))
-					w.(http.Flusher).Flush()
+					push(w, "ping ["+s+"]"+time.Now().Format("2006-01-02 15:04:05"))
 				}
 			}
 		}
@@ -84,8 +108,7 @@ func main() {
 				_, _ = w.Write([]byte("参数错误"))
 			} else {
 				if wo, ok := m[uid]; ok {
-					_, _ = wo.Write([]byte("data: " + msg + time.Now().Format("2006-01-02 15:04:05") + "\n\n"))
-					wo.(http.Flusher).Flush()
+					push(wo, msg+time.Now().Format("2006-01-02 15:04:05"))
 
 					w.WriteHeader(200)
 					_, _ = w.Write([]byte("ok"))
