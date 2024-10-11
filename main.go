@@ -69,33 +69,37 @@ func push(w http.ResponseWriter, msg string) {
 			fmt.Println(err)
 		}
 	}()
-
+	if w == nil { // 可能被关闭了,就不推送了
+		return
+	}
 	_, _ = w.Write([]byte("data: " + msg + "\n\n"))
 	w.(http.Flusher).Flush()
 }
 
-func main() {
-	go func() {
-		quit := make(chan os.Signal, 1)
-		signal.Notify(quit, syscall.SIGINT, syscall.SIGTERM)
+func ping() {
+	quit := make(chan os.Signal, 1)
+	signal.Notify(quit, syscall.SIGINT, syscall.SIGTERM)
 
-		var frq time.Duration = 5
+	var frq time.Duration = 60 // 每60单位ping一下
 
-		var t = time.NewTicker(frq * time.Second)
+	var t = time.NewTicker(frq * time.Second)
 
-		for {
-			select {
-			case <-quit:
-				fmt.Println("退出 ping")
-				return
-			case <-t.C:
-				t.Reset(frq * time.Second)
-				for s, w := range m {
-					push(w, "ping ["+s+"]"+time.Now().Format("2006-01-02 15:04:05"))
-				}
+	for {
+		select {
+		case <-quit:
+			fmt.Println("退出 ping")
+			return
+		case <-t.C:
+			t.Reset(frq * time.Second)
+			for s, w := range m {
+				push(w, "ping ["+s+"]"+time.Now().Format("2006-01-02 15:04:05"))
 			}
 		}
-	}()
+	}
+}
+
+func main() {
+	go ping()
 
 	go func() {
 		http.HandleFunc("/sse", sseHandler)
