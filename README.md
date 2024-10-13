@@ -1,22 +1,68 @@
-# SSE 
+# 消息推送模块
 
-> 基于 sse 实现服务端消息推送
+> 基于 SSE 实现分布式服务端消息推送服务
 
-## 启动服务
+
+## 依赖redis
 
 ```bash
-go run main.go
+docker run --rm --name red -d -p 6379:6379 redis:alpine
+
 ```
 
-## 消息模拟
 
-### 接收消息
+## 功能模块
 
-```bash
-curl --location 'http://127.0.0.1:8080/sse?uid=111'
+ - token认证
+ - 消息分发
+
+## 配置文件
+
+## Proxy 代理配置
+
+ - 注意 http版本要为1.1
+ - 关闭缓冲区
+ - 超时断开重连机制
+
+```nginx configuration
+upstream sse_group {
+   server 172.28.95.169:9184;
+   server 172.28.95.169:9185;
+}
+
+server {
+   location ^~ /sse/ {
+        rewrite ^/sse(.*) $1 break;
+        proxy_pass http://sse_group;
+        proxy_http_version 1.1;
+        proxy_buffering off;
+        proxy_read_timeout 43200s;
+    }
+}
+
 ```
-### 发送消息
 
-```bash
-curl --location 'http://127.0.0.1:8080/tips?uid=111&msg=%E6%88%91%E6%AC%A1%E5%A5%A5%E5%8E%89%E5%AE%B3%E5%95%A6'
+## 进程守护
+
+```unit file (systemd)
+#/lib/systemd/system/sse.service
+
+[Unit]
+Description=sse service
+
+[Service]
+User=root
+Type=simple
+Restart=always
+RestartSec=5s
+ExecStart=/var/www/sse/bin -f config2.yml
+ExecReload=/bin/kill -s HUP
+WorkingDirectory=/var/www/sse
+KillMode=process
+Delegate=yes
+StandardOutput=file:/var/log/sse.log
+StandardError=file:/var/log/sse.log
+
+[Install]
+WantedBy=multi-user.target
 ```
