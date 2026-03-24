@@ -56,10 +56,11 @@ func main() {
 
 	startTime := time.Now()
 
+loop:
 	for i := 0; i < *connections; i++ {
 		select {
 		case <-ctx.Done():
-			break
+			break loop
 		default:
 		}
 

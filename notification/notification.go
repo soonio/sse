@@ -17,7 +17,7 @@ type Notification struct {
 
 func NewNotification(logger *zap.Logger) *Notification {
 	var n = &Notification{logger: logger}
-	n.batch = bundle.New[string](
+	n.batch = bundle.New(
 		n.Send,
 		bundle.WithSize[string](1000),
 		bundle.WithTimeout[string](3*time.Second),
