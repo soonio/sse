@@ -6,7 +6,6 @@ import (
 	"encoding/json"
 	"flag"
 	"fmt"
-	"io"
 	"net/http"
 	"os"
 	"os/signal"
@@ -176,26 +175,21 @@ func connectSSE(ctx context.Context, addr, token string, msgCount *atomic.Int64)
 		return false
 	}
 
-	go func() {
-		defer resp.Body.Close()
-		buf := make([]byte, 4096)
-		for {
-			select {
-			case <-ctx.Done():
-				return
-			default:
-				n, err := resp.Body.Read(buf)
-				if err != nil {
-					if err != io.EOF {
-					}
-					return
-				}
-				if n > 0 {
-					msgCount.Add(1)
-				}
+	// 阻塞读取，直到连接断开或上下文取消
+	defer resp.Body.Close()
+	buf := make([]byte, 4096)
+	for {
+		select {
+		case <-ctx.Done():
+			return true
+		default:
+			n, err := resp.Body.Read(buf)
+			if err != nil {
+				return true // 连接断开
+			}
+			if n > 0 {
+				msgCount.Add(1)
 			}
 		}
-	}()
-
-	return true
+	}
 }
