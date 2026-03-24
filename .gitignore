@@ -1,0 +1,9 @@
+.idea
+.DS_Store
+
+binary
+config.yml
+
+docs
+tmp
+*local*
