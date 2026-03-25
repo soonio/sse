@@ -19,6 +19,7 @@ import (
 
 	"pusher/hub"
 	"pusher/limiter"
+	"pusher/pool"
 	"pusher/types"
 )
 
@@ -66,7 +67,7 @@ func base64RawURLEncode(data string) ([]byte, error) {
 	return base64.URLEncoding.DecodeString(data)
 }
 
-func NewHandler(debug bool, logger *zap.Logger, h *hub.Hub, lim *limiter.Limiter, mp types.Pool[*types.Message[string]]) *chi.Mux {
+func NewHandler(debug bool, logger *zap.Logger, h *hub.Hub, lim *limiter.Limiter, mp pool.Pool[*types.Message[string]]) *chi.Mux {
 
 	var authorization = func(next http.Handler) http.Handler {
 		return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -124,7 +125,7 @@ func Close() http.HandlerFunc {
 	}
 }
 
-func Listen(logger *zap.Logger, h *hub.Hub, mp types.Pool[*types.Message[string]]) http.HandlerFunc {
+func Listen(logger *zap.Logger, h *hub.Hub, mp pool.Pool[*types.Message[string]]) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		_ = r.Body.Close()
 

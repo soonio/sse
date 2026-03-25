@@ -12,6 +12,7 @@ import (
 	"go.uber.org/zap"
 
 	"pusher/hub"
+	"pusher/pool"
 	"pusher/types"
 	"pusher/worker"
 )
@@ -30,8 +31,8 @@ type Dispatcher struct {
 	group     string
 	consumer  string
 	notify    Notifier
-	bp        types.Pool[*bytes.Buffer]
-	mp        types.Pool[*types.Message[string]]
+	bp        pool.Pool[*bytes.Buffer]
+	mp        pool.Pool[*types.Message[string]]
 	hub       *hub.Hub
 	pingPool  *sync.Pool
 	pushPool  *worker.Pool
@@ -43,8 +44,8 @@ func NewDispatcher(
 	red *redis.Client,
 	stream, group, consumer string,
 	notify Notifier,
-	bp types.Pool[*bytes.Buffer],
-	mp types.Pool[*types.Message[string]],
+	bp pool.Pool[*bytes.Buffer],
+	mp pool.Pool[*types.Message[string]],
 	h *hub.Hub,
 ) *Dispatcher {
 	ctx, cancel := context.WithCancel(context.Background())

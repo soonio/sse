@@ -11,11 +11,6 @@ const (
 	MessageTypePing = "ping"
 )
 
-type Pool[T any] interface {
-	Get() T
-	Put(T)
-}
-
 type Message[T any] struct {
 	Type      string `json:"type"`
 	Body      T      `json:"body,omitempty"`
