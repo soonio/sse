@@ -1,7 +1,6 @@
-package dispatch
+package push
 
 import (
-	"bytes"
 	"context"
 	"errors"
 	"strings"
@@ -11,17 +10,19 @@ import (
 	"github.com/redis/go-redis/v9"
 	"go.uber.org/zap"
 
-	"pusher/hub"
-	"pusher/pool"
+	"pusher/config"
+	"pusher/infrastructure/pool"
+	"pusher/infrastructure/worker"
+	"pusher/internal/hub"
 	"pusher/types"
-	"pusher/worker"
 )
 
+// Notifier 是离线通知接口，由 notify.Service 实现。
 type Notifier interface {
 	Push(string)
 }
 
-type Dispatcher struct {
+type Service struct {
 	ctx       context.Context
 	cancel    context.CancelFunc
 	wg        sync.WaitGroup
@@ -31,34 +32,33 @@ type Dispatcher struct {
 	group     string
 	consumer  string
 	notify    Notifier
-	bp        pool.Pool[*bytes.Buffer]
-	mp        pool.Pool[*types.Message[string]]
+	bp        *pool.BufferPool
+	mp        *pool.MessagePool
 	hub       *hub.Hub
 	pingPool  *sync.Pool
 	pushPool  *worker.Pool
 	pingPoolW *worker.Pool
 }
 
-func NewDispatcher(
+func NewService(
 	logger *zap.Logger,
 	red *redis.Client,
-	stream, group, consumer string,
 	notify Notifier,
-	bp pool.Pool[*bytes.Buffer],
-	mp pool.Pool[*types.Message[string]],
+	bp *pool.BufferPool,
+	mp *pool.MessagePool,
 	h *hub.Hub,
-) *Dispatcher {
+) *Service {
 	ctx, cancel := context.WithCancel(context.Background())
 	numWorkers := 100
 
-	return &Dispatcher{
+	return &Service{
 		ctx:      ctx,
 		cancel:   cancel,
 		logger:   logger,
 		red:      red,
-		stream:   stream,
-		group:    group,
-		consumer: consumer,
+		stream:   config.StreamName,
+		group:    config.ConsumerGroup,
+		consumer: config.ConsumerNamePatten,
 		notify:   notify,
 		bp:       bp,
 		mp:       mp,
@@ -71,28 +71,28 @@ func NewDispatcher(
 	}
 }
 
-func (d *Dispatcher) Run() {
-	d.wg.Add(1)
-	go d.Ping()
+func (s *Service) Run() {
+	s.wg.Add(1)
+	go s.ping()
 
 	var args = &redis.XReadGroupArgs{
-		Group:    d.group,
-		Consumer: d.consumer,
-		Streams:  []string{d.stream, ">"},
+		Group:    s.group,
+		Consumer: s.consumer,
+		Streams:  []string{s.stream, ">"},
 		Count:    3000,
 		Block:    3 * time.Second,
 	}
 
 	for {
 		select {
-		case <-d.ctx.Done():
+		case <-s.ctx.Done():
 			return
 		default:
-			messages, err := d.red.XReadGroup(d.ctx, args).Result()
+			messages, err := s.red.XReadGroup(s.ctx, args).Result()
 			if err != nil && !errors.Is(err, redis.Nil) {
-				d.logger.Error(err.Error())
+				s.logger.Error(err.Error())
 				select {
-				case <-d.ctx.Done():
+				case <-s.ctx.Done():
 					return
 				case <-time.After(5 * time.Second):
 				}
@@ -104,16 +104,16 @@ func (d *Dispatcher) Run() {
 			}
 
 			for _, stream := range messages {
-				d.wg.Add(1)
-				ok := d.pushPool.Submit(func() {
-					defer d.wg.Done()
-					d.Push(stream.Messages)
+				s.wg.Add(1)
+				ok := s.pushPool.Submit(func() {
+					defer s.wg.Done()
+					s.push(stream.Messages)
 				})
 
 				if !ok {
 					go func(msgs []redis.XMessage) {
-						defer d.wg.Done()
-						d.Push(msgs)
+						defer s.wg.Done()
+						s.push(msgs)
 					}(stream.Messages)
 				}
 
@@ -121,96 +121,100 @@ func (d *Dispatcher) Run() {
 				for _, msg := range stream.Messages {
 					IDs = append(IDs, msg.ID)
 				}
-				_, err = d.red.XAck(d.ctx, d.stream, d.group, IDs...).Result()
+				_, err = s.red.XAck(s.ctx, s.stream, s.group, IDs...).Result()
 				if err != nil {
-					d.logger.Error(err.Error())
+					s.logger.Error(err.Error())
 				}
 			}
 		}
 	}
 }
 
-func (d *Dispatcher) Ping() {
-	defer d.wg.Done()
+func (s *Service) ping() {
+	defer s.wg.Done()
 
 	var t = time.NewTicker(time.Minute)
 	defer t.Stop()
 
 	for {
 		select {
-		case <-d.ctx.Done():
+		case <-s.ctx.Done():
 			return
 		case <-t.C:
-			keys := d.hub.Keys()
+			keys := s.hub.Keys()
 
 			for _, uid := range keys {
 				uid := uid
-				ok := d.pingPoolW.Submit(func() {
-					if w, ok := d.hub.Get(uid); ok {
-						var msg = d.pingPool.Get().(*types.Message[string])
+				ok := s.pingPoolW.Submit(func() {
+					if w, ok := s.hub.Get(uid); ok {
+						var msg = s.pingPool.Get().(*types.Message[string])
 						_ = w.Push(msg)
-						d.pingPool.Put(msg)
+						s.pingPool.Put(msg)
 					}
 				})
 
 				if !ok {
-					d.logger.Warn("心跳任务提交失败，队列已满", zap.String("uid", uid))
+					s.logger.Warn("心跳任务提交失败，队列已满", zap.String("uid", uid))
 				}
 			}
 		}
 	}
 }
 
-func (d *Dispatcher) Push(messages []redis.XMessage) {
+func (s *Service) push(messages []redis.XMessage) {
 	for _, message := range messages {
 		uidVal, ok := message.Values["uid"]
 		if !ok {
-			d.logger.Warn("消息缺少 uid 字段", zap.String("id", message.ID))
+			s.logger.Warn("消息缺少 uid 字段", zap.String("id", message.ID))
 			continue
 		}
 		uid, ok := uidVal.(string)
 		if !ok {
-			d.logger.Warn("uid 字段类型错误", zap.String("id", message.ID), zap.Any("uid", uidVal))
+			s.logger.Warn("uid 字段类型错误", zap.String("id", message.ID), zap.Any("uid", uidVal))
 			continue
 		}
 
 		msgVal, ok := message.Values["msg"]
 		if !ok {
-			d.logger.Warn("消息缺少 msg 字段", zap.String("id", message.ID), zap.String("uid", uid))
+			s.logger.Warn("消息缺少 msg 字段", zap.String("id", message.ID), zap.String("uid", uid))
 			continue
 		}
 		msg, ok := msgVal.(string)
 		if !ok {
-			d.logger.Warn("msg 字段类型错误", zap.String("id", message.ID), zap.Any("msg", msgVal))
+			s.logger.Warn("msg 字段类型错误", zap.String("id", message.ID), zap.Any("msg", msgVal))
 			continue
 		}
 
-		ok = d.pushPool.Submit(func() {
-			if w, ok := d.hub.Get(uid); ok {
-				tp := d.bp.Get()
+		ok = s.pushPool.Submit(func() {
+			if w, ok := s.hub.Get(uid); ok {
+				tp := s.bp.Get()
 				tp.WriteString(msg)
 				err := w.Push(tp)
 				if err != nil {
 					if strings.HasSuffix(err.Error(), "panic:") {
-						d.logger.Error(err.Error())
+						s.logger.Error(err.Error())
 					}
-					d.notify.Push(uid)
+					s.notify.Push(uid)
 				}
-				d.bp.Put(tp)
+				s.bp.Put(tp)
 			} else {
-				d.notify.Push(uid)
+				s.notify.Push(uid)
 			}
 		})
 
 		if !ok {
-			d.logger.Warn("推送任务提交失败，队列已满", zap.String("uid", uid))
+			s.logger.Warn("推送任务提交失败，队列已满", zap.String("uid", uid))
 		}
 	}
 }
 
-func (d *Dispatcher) Close() {
-	d.cancel()
-	d.pushPool.Close()
-	d.pingPoolW.Close()
-	d.wg.Wait()
+func (s *Service) RedisClient() *redis.Client {
+	return s.red
+}
+
+func (s *Service) Close() {
+	s.cancel()
+	s.pushPool.Close()
+	s.pingPoolW.Close()
+	s.wg.Wait()
 }

@@ -53,11 +53,3 @@ func (b Body) Reader() io.Reader {
 	}
 	return bytes.NewReader(bs)
 }
-
-type JPushRsp struct {
-	MsgID string `json:"msg_id"`
-	Error struct {
-		Code    int    `json:"code"`
-		Message string `json:"message"`
-	} `json:"error"`
-}

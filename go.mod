@@ -4,6 +4,7 @@ go 1.23
 
 require (
 	github.com/go-chi/chi/v5 v5.2.5
+	github.com/google/wire v0.7.0
 	github.com/json-iterator/go v1.1.12
 	github.com/redis/go-redis/v9 v9.18.0
 	github.com/soonio/bundle v1.0.0
