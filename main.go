@@ -12,18 +12,11 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/redis/go-redis/v9"
 	"go.uber.org/zap"
 	"go.uber.org/zap/zapcore"
 
+	"pusher/app"
 	"pusher/config"
-	"pusher/dispatch"
-	"pusher/handler"
-	"pusher/hub"
-	"pusher/limiter"
-	"pusher/monitor"
-	"pusher/notification"
-	"pusher/pool"
 )
 
 var configFile = flag.String("f", "config.yml", "the config file")
@@ -36,7 +29,6 @@ func main() {
 	var c config.Config
 	config.MustLoad(*configFile, &c)
 
-	// 初始化日志
 	logger := zap.New(
 		zapcore.NewCore(
 			zapcore.NewJSONEncoder(zapcore.EncoderConfig{
@@ -61,59 +53,32 @@ func main() {
 		zap.AddCaller(),
 	)
 
-	// 初始化Redis客户端
-	cac := redis.NewClient(&redis.Options{
-		Addr:            c.Redis.Addr,
-		Password:        c.Redis.Password,
-		DB:              c.Redis.Database,
-		PoolSize:        120,
-		MinIdleConns:    64,
-		MaxIdleConns:    128,
-		ConnMaxIdleTime: 5 * time.Minute,
-		ConnMaxLifetime: 10 * time.Minute,
-	})
-
-	var err error
-
-	// 创建队列 & 创建消费者组
-	err = cac.XGroupCreateMkStream(context.Background(), config.StreamName, config.ConsumerGroup, "$").Err()
-	if err != nil && !strings.Contains(err.Error(), "BUSYGROUP") {
-		panic(err)
-	}
-
-	// 创建消费者
-	err = cac.XGroupCreateConsumer(context.Background(), config.StreamName, config.ConsumerGroup, config.ConsumerNamePatten).Err()
+	a, err := app.InitApp(&c, logger)
 	if err != nil {
 		panic(err)
 	}
 
-	// 初始化连接池
-	h := hub.NewHub()
-	go h.Start()
+	// 初始化 Redis Stream 消费者组
+	ctx := context.Background()
+	rdbClient := a.PushSvc.RedisClient()
+	if err := rdbClient.XGroupCreateMkStream(ctx, config.StreamName, config.ConsumerGroup, "$").Err(); err != nil {
+		if !strings.Contains(err.Error(), "BUSYGROUP") {
+			panic(err)
+		}
+	}
+	if err := rdbClient.XGroupCreateConsumer(ctx, config.StreamName, config.ConsumerGroup, config.ConsumerNamePatten).Err(); err != nil {
+		panic(err)
+	}
 
-	notify := notification.NewNotification(logger)
-	notify.Start()
-
-	var bp = pool.NewBufferPool(128)
-	var mp = pool.NewMessagePool()
-
-	dispatcher := dispatch.NewDispatcher(
-		logger, cac,
-		config.StreamName, config.ConsumerGroup, config.ConsumerNamePatten,
-		notify, bp, mp, h,
-	)
-	go dispatcher.Run()
-
-	mon := monitor.NewMonitor(logger, h)
-	go mon.Start()
-
-	lim := limiter.NewLimiter()
-	go lim.Start()
-
-	srv := &http.Server{Addr: c.Addr, Handler: handler.NewHandler(c.Debug, logger, h, lim, mp)}
+	// 启动各组件
+	go a.Hub.Start()
+	a.NotifySvc.Start()
+	go a.PushSvc.Run()
+	go a.Monitor.Start()
+	go a.Limiter.Start()
 
 	go func() {
-		if err := srv.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
+		if err := a.HTTPSrv.ListenAndServe(); err != nil && !errors.Is(err, http.ErrServerClosed) {
 			fmt.Println("http server err:", err)
 		}
 	}()
@@ -123,16 +88,15 @@ func main() {
 	signal.Notify(quit, syscall.SIGINT, syscall.SIGTERM)
 	<-quit
 
-	mon.Stop()
-	dispatcher.Close()
-	notify.Close()
-	h.Clear()
-	lim.Close()
+	a.Monitor.Stop()
+	a.PushSvc.Close()
+	a.NotifySvc.Close()
+	a.Hub.Clear()
+	a.Limiter.Close()
 
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	shutCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
-
-	if err := srv.Shutdown(ctx); err != nil {
+	if err := a.HTTPSrv.Shutdown(shutCtx); err != nil {
 		logger.Error(err.Error())
 	}
 }
